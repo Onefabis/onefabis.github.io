@@ -1,0 +1,765 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Antenna Polar Plot</title>
+
+  <!-- Plotly CDN -->
+  <script src="plotly-2.24.1.min.js"></script>
+
+  <style>
+    :root {
+      --bg: #2b2b2b;
+      --elements: #454545;
+      --accent: #ffffff;
+      --muted: #c7c7c7;
+      --card: #0b1220;
+      --danger: #ff6b6b;
+      --gap: 8px;
+    }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      font-family: Inter, Segoe UI, Roboto, Arial, sans-serif;
+      background: var(--bg);
+      color: #e6eef5;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 1fr 350px;
+      gap: 18px;
+      padding: 18px;
+      height: 100vh;
+      box-sizing: border-box;
+    }
+
+    /* LEFT - plot */
+    .left {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn {
+      background: var(--elements);
+      border: 1px solid rgba(255, 255, 255, 0.19);
+      color: var(--accent);
+      padding: 6px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .btn:active {
+      transform: translateY(1px);
+    }
+
+    .small {
+      padding: 6px 8px;
+    }
+
+    #error {
+      min-height: 40px;
+      color: var(--danger);
+      font-size: 0.95rem;
+    }
+
+    /* Plot area */
+    #plot {
+      flex: 1 1 auto;
+      border-radius: 12px;
+      overflow: hidden;
+      background: linear-gradient(180deg, rgba(0,0,0,0.15), rgba(0,0,0,0.05));
+      box-shadow: 0 6px 18px rgba(4, 6, 10, 0.6);
+    }
+
+    /* RIGHT - controls */
+    .right {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    label {
+      color: var(--muted);
+      font-size: 0.95rem;
+      white-space: nowrap;
+    }
+
+    input[type="text"],
+    input[type="number"] {
+      background: #393939;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      color: inherit;
+      font-family: Inter, Segoe UI, Roboto, Arial, sans-serif;
+      font-size: 1em;
+      padding: 2px 8px;
+      border-radius: 6px;
+      outline: none;
+    }
+
+    input[type="number"]::-webkit-outer-spin-button,
+    input[type="number"]::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
+    /* Field container */
+    .fields {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 6px;
+      max-height: 88vh;
+      overflow: auto;
+      margin-top: 8px;
+      padding-right: 6px;
+    }
+
+    /* Each field row */
+    .field-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    /* Responsive for small screens */
+    @media (max-width: 900px) {
+      .fields {
+        grid-template-columns: repeat(4, 1fr);
+      }
+
+      .field-row {
+        margin-bottom: 4px;
+      }
+    }
+
+    .deg {
+      width: 56px;
+      text-align: right;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      flex-shrink: 0;
+    }
+
+    .db-input {
+      width: 80px;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-top: 6px;
+    }
+
+    /* Responsive */
+    @media (max-width: 900px) {
+      .app {
+        grid-template-columns: 1fr;
+        grid-auto-rows: auto 1fr;
+      }
+
+      .right {
+        order: 2;
+      }
+
+      .left {
+        order: 1;
+      }
+
+      #plot {
+        height: 60vh;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="left">
+      <div class="toolbar">
+        <button id="saveBtn" class="btn small">Save</button>
+        <button id="drawBtn" class="btn small">Draw</button>
+        <button id="mirrorBtn" class="btn small">Mirror L to R</button>
+        <div style="flex:1"></div>
+      </div>
+
+      <div id="plot" class="elements" aria-label="Polar plot container"></div>
+      <div id="error" aria-live="polite"></div>
+    </div>
+
+    <div class="right">
+      <div class="row">
+        <label style="margin-right:6px">Step:</label>
+        <input id="stepInput" type="number" min="1" max="180" value="30" style="width:80px" />
+        <label>° (deg)</label>
+        <button id="setStepBtn" class="btn small" style="margin-left:8px">Set</button>
+        <button id="clearFieldsBtn" class="btn small" style="margin-left:8px">Clear fields</button>
+      </div>
+      <div class="elements">
+        <div class="row" style="justify-content:space-between">
+          <span>dB values (angles)</span>
+        </div>
+        <div id="fields" class="fields" aria-label="dB fields"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /*
+     * Antenna Polar Plot - Web Version
+     * - db_to_radius: (db/100 + 1)^5, clipped to [-100, 0]
+     * - smoothing: Catmull-Rom spline for cyclic data
+     */
+
+    (function() {
+      // ========== Configuration ==========
+      const SMOOTH_POINTS = 360;
+      const THETA_OFFSET = Math.PI / 2;
+      const DB_REGEX = /-?\d+(?:[.,]\d+)?/;
+
+      // ========== DOM Elements ==========
+      const stepInput = document.getElementById('stepInput');
+      const setStepBtn = document.getElementById('setStepBtn');
+      const drawBtn = document.getElementById('drawBtn');
+      const saveBtn = document.getElementById('saveBtn');
+      const mirrorBtn = document.getElementById('mirrorBtn');
+      const clearFieldsBtn = document.getElementById('clearFieldsBtn');
+      const fieldsContainer = document.getElementById('fields');
+      const errorEl = document.getElementById('error');
+      const plotDiv = document.getElementById('plot');
+
+      // ========== State ==========
+      let currentStep = parseInt(stepInput.value) || 30;
+      let dbInputs = [];
+      let prevTexts = [];
+
+      // ========== Math Functions ==========
+      
+      /**
+       * Convert dB value to radius using power transformation
+       */
+      function dbToRadius(db) {
+        db = Math.max(-100, Math.min(0, db));
+        return Math.pow(db / 100 + 1, 5);
+      }
+
+      /**
+       * Catmull-Rom spline interpolation for closed curves
+       * @param {Array} points - Array of [theta (rad), r] pairs
+       * @param {number} M - Number of sample points
+       * @returns {Object} - {thetaSamples, rSamples}
+       */
+      function catmullRomClosedSample(points, M) {
+        if (points.length < 2) return { thetaSamples: [], rSamples: new Array(M).fill(0) };
+
+        // Prepare cyclic points
+        const p = [...points];
+        p.push([points[0][0] + 2 * Math.PI, points[0][1]]);
+        p.push([points[1 % points.length][0] + 2 * Math.PI, points[1 % points.length][1]]);
+
+        // Generate sample theta array
+        const thetaSamples = Array.from({ length: M }, (_, i) => i * 2 * Math.PI / (M - 1));
+        const rOut = new Array(M);
+
+        for (let si = 0; si < M; si++) {
+          const t = thetaSamples[si];
+          
+          // Find segment k where p[k].theta <= t < p[k+1].theta
+          let k = 0;
+          while (k + 1 < p.length && p[k + 1][0] <= t) k++;
+
+          // Get surrounding points for Catmull-Rom
+          const i0 = Math.max(0, k - 1);
+          const i1 = k;
+          const i2 = Math.min(p.length - 1, k + 1);
+          const i3 = Math.min(p.length - 1, k + 2);
+          
+          const t0 = p[i1][0], t1 = p[i2][0];
+          const denom = (t1 - t0) || 1e-6;
+          const u = (t - t0) / denom;
+
+          const P0 = p[i0][1], P1 = p[i1][1], P2 = p[i2][1], P3 = p[i3][1];
+
+          // Catmull-Rom interpolation
+          const u2 = u * u, u3 = u2 * u;
+          const a = -0.5 * P0 + 1.5 * P1 - 1.5 * P2 + 0.5 * P3;
+          const b = P0 - 2.5 * P1 + 2 * P2 - 0.5 * P3;
+          const c = -0.5 * P0 + 0.5 * P2;
+          const d = P1;
+          let val = a * u3 + b * u2 + c * u + d;
+
+          // Clamp to reduce overshoot
+          const localMin = Math.min(P0, P1, P2, P3);
+          const localMax = Math.max(P0, P1, P2, P3);
+          val = Math.max(localMin, Math.min(localMax, val));
+
+          rOut[si] = val;
+        }
+
+        return { thetaSamples, rSamples: rOut };
+      }
+
+      // ========== UI Functions ==========
+
+      /**
+       * Create dB input fields based on step
+       */
+      function createDbRows(step, restorePrev = true) {
+        prevTexts = dbInputs.map(inp => inp.value) || [];
+        fieldsContainer.innerHTML = '';
+        dbInputs = [];
+
+        const nRows = Math.max(1, Math.floor(360 / step));
+
+        for (let i = 0; i < nRows; i++) {
+          const angle = i * step;
+          const row = document.createElement('div');
+          row.className = 'field-row';
+
+          const lbl = document.createElement('div');
+          lbl.className = 'deg';
+          lbl.textContent = angle + '°';
+          row.appendChild(lbl);
+
+          const inp = document.createElement('input');
+          inp.className = 'db-input';
+          inp.type = 'text';
+          inp.placeholder = 'dB';
+          if (restorePrev && prevTexts[i]) inp.value = prevTexts[i];
+          row.appendChild(inp);
+
+          fieldsContainer.appendChild(row);
+          dbInputs.push(inp);
+        }
+      }
+
+      /**
+       * Parse dB value from text input
+       */
+      function parseDbField(text) {
+        if (!text) return null;
+        const m = text.match(DB_REGEX);
+        if (!m) return null;
+        return parseFloat(m[0].replace(',', '.'));
+      }
+
+      /**
+       * Validate and collect data from input fields
+       */
+      function validateAndCollect() {
+        errorEl.textContent = '';
+        const stepVal = Number(stepInput.value);
+        
+        if (Number.isNaN(stepVal)) {
+          return { err: 'Step value must be numeric.' };
+        }
+        if (!(1 <= stepVal && stepVal <= 180)) {
+          return { err: 'Step is out of range (1-180).' };
+        }
+
+        const angles = [];
+        const values = [];
+        const errors = [];
+
+        for (let idx = 0; idx < dbInputs.length; idx++) {
+          const txt = dbInputs[idx].value.trim();
+          if (txt === '') continue;
+          
+          const parsed = parseDbField(txt);
+          if (parsed === null || Number.isNaN(parsed)) {
+            errors.push(`Non-numeric value at field ${idx + 1}.`);
+            continue;
+          }
+          if (parsed < -100 || parsed > 0) {
+            errors.push(`dB out of range at field ${idx + 1}.`);
+            continue;
+          }
+          
+          angles.push(idx * stepVal);
+          values.push(parsed);
+        }
+
+        if (errors.length) return { err: errors.join(' ') };
+        if (values.length < 2) return { err: 'Not enough data points...' };
+
+        return { angles, values };
+      }
+
+      // ========== Storage Functions ==========
+
+      function saveFieldsToStorage() {
+        const values = dbInputs.map(inp => inp.value);
+        localStorage.setItem('antennaDbFields', JSON.stringify(values));
+        localStorage.setItem('antennaStep', currentStep);
+      }
+
+      function restoreFieldsFromStorage() {
+        const storedValues = JSON.parse(localStorage.getItem('antennaDbFields') || '[]');
+        const storedStep = parseInt(localStorage.getItem('antennaStep')) || currentStep;
+        stepInput.value = storedStep;
+        currentStep = storedStep;
+        createDbRows(currentStep, false);
+        
+        dbInputs.forEach((inp, idx) => {
+          if (storedValues[idx] !== undefined) inp.value = storedValues[idx];
+        });
+      }
+
+      // ========== Plotting Functions ==========
+
+      /**
+       * Generate base layout configuration
+       */
+      function baseLayout() {
+        return {
+          polar: {
+            bgcolor: 'rgba(0,0,0,0)',
+            radialaxis: {
+              visible: true,
+              range: [0, 1],
+              angle: 90,
+              showticklabels: false,
+              tickmode: 'array',
+              tickvals: [dbToRadius(0), dbToRadius(-10), dbToRadius(-20), dbToRadius(-40)],
+              ticktext: ['0', '-10', '-20', '-40'],
+              tickfont: { color: 'rgba(0,0,0,0.8)' },
+              gridcolor: 'rgba(0,0,0,0.2)'
+            },
+            angularaxis: {
+              rotation: 90,
+              direction: "counterclockwise",
+              tickmode: 'array',
+              tickvals: [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330],
+              ticktext: ['0°', '30°', '60°', '90°', '120°', '150°', '180°', '210°', '240°', '270°', '300°', '330°'],
+              tickfont: { color: 'rgba(0,0,0,0.9)' },
+              gridcolor: 'rgba(0,0,0,0.2)'
+            }
+          },
+          showlegend: false,
+          margin: { t: 38, b: 38, l: 38, r: 38 },
+          paper_bgcolor: 'rgba(255, 255, 255, 1)',
+          plot_bgcolor: 'rgba(255, 255, 255, 1)'
+        };
+      }
+
+      /**
+       * Build horizontal tick label traces
+       */
+      function buildHorizontalTickTraces() {
+        return [
+          { db: 0 },
+          { db: -10 },
+          { db: -20 },
+          { db: -40 }
+        ].map(t => ({
+          type: "scatterpolar",
+          mode: "text",
+          theta: [0],
+          r: [dbToRadius(t.db)],
+          text: [`${t.db} dB`],
+          textangle: 0,
+          textposition: "middle left",
+          showlegend: false,
+          hoverinfo: "none"
+        }));
+      }
+
+      /**
+       * Build radial dotted lines
+       */
+      function buildRadialDottedLines(stepDeg = 10) {
+        const lines = [];
+        for (let deg = 0; deg < 360; deg += stepDeg) {
+          lines.push({
+            type: "scatterpolar",
+            r: [0, 1],
+            theta: [deg, deg],
+            mode: "lines",
+            line: {
+              dash: 'dot',
+              width: 1,
+              color: 'rgba(0,0,0,0.2)'
+            },
+            hoverinfo: "none",
+            showlegend: false
+          });
+        }
+        return lines;
+      }
+
+      /**
+       * Draw empty plot with grid
+       */
+      function drawEmptyPlot() {
+        const layout = {
+          ...baseLayout(),
+          polar: {
+            ...baseLayout().polar,
+            radialaxis: {
+              ...baseLayout().polar.radialaxis,
+              showticklabels: false,
+              ticks: ""
+            }
+          },
+          dragmode: false
+        };
+
+        const emptyTrace = {
+          type: "scatterpolar",
+          r: [0],
+          theta: [0],
+          mode: "lines",
+          line: { width: 0 },
+          hoverinfo: "none",
+          showlegend: false
+        };
+
+        const tickTextTraces = buildHorizontalTickTraces();
+        const radialDottedLines = buildRadialDottedLines(10);
+
+        Plotly.react(
+          plotDiv,
+          [emptyTrace, ...radialDottedLines, ...tickTextTraces],
+          layout,
+          { responsive: true, staticPlot: true }
+        );
+      }
+
+      /**
+       * Plot antenna pattern data
+       */
+      function plotData(anglesDeg, valuesDb) {
+        // Convert angles to radians in [0, 2π)
+        const anglesRad = anglesDeg.map(a => ((a % 360) + 360) % 360 * Math.PI / 180);
+        
+        // Sort by angle ascending
+        const idx = anglesRad.map((v, i) => [v, i]).sort((a, b) => a[0] - b[0]).map(x => x[1]);
+        const xSorted = idx.map(i => anglesRad[i]);
+        const ySorted = idx.map(i => dbToRadius(valuesDb[i]));
+
+        // Create points array [theta, r]
+        const points = xSorted.map((th, i) => [th, ySorted[i]]);
+
+        // Sample smooth values
+        const M = SMOOTH_POINTS;
+        const { thetaSamples, rSamples } = catmullRomClosedSample(points, M);
+
+        // Convert to degrees for Plotly
+        const thetaDeg = thetaSamples.map(t => t * 180 / Math.PI);
+
+        // Main trace: blue line, width 4
+        const traceSmooth = {
+          type: 'scatterpolar',
+          r: rSamples,
+          theta: thetaDeg,
+          mode: 'lines',
+          line: { color: 'rgb(50,128,255)', width: 4 },
+          hoverinfo: 'none'
+        };
+
+        // Marker points: red, size 12
+        const tracePoints = {
+          type: 'scatterpolar',
+          r: ySorted,
+          theta: xSorted.map(t => t * 180 / Math.PI),
+          mode: 'markers',
+          marker: { color: 'red', size: 12 },
+          hovertemplate: '%{theta}°: %{r:.3f}<extra></extra>'
+        };
+
+        // Radial lines (every 10°)
+        const radialTraces = [];
+        for (let deg = 0; deg < 360; deg += 10) {
+          radialTraces.push({
+            type: 'scatterpolar',
+            r: [0, 1],
+            theta: [deg, deg],
+            mode: 'lines',
+            line: { dash: 'dot', width: 0.8, color: 'rgba(200,200,200,0.15)' },
+            hoverinfo: 'none',
+            showlegend: false
+          });
+        }
+
+        // Concentric circles
+        const dbLevels = [];
+        for (let d = 0; d >= -100; d -= 10) dbLevels.push(d);
+        const circleTraces = [];
+        for (const db of dbLevels) {
+          const rr = Array.from({ length: M }, (_, i) => dbToRadius(db));
+          const thdeg = thetaSamples.map(t => t * 180 / Math.PI);
+          circleTraces.push({
+            type: 'scatterpolar',
+            r: rr,
+            theta: thdeg,
+            mode: 'lines',
+            line: { width: 0.7, color: 'rgba(200,200,200,0.08)' },
+            hoverinfo: 'none',
+            showlegend: false
+          });
+        }
+
+        const tickTextTraces = buildHorizontalTickTraces();
+
+        const data = [
+          ...radialTraces,
+          ...circleTraces,
+          ...buildRadialDottedLines(),
+          traceSmooth,
+          tracePoints,
+          ...tickTextTraces
+        ];
+
+        const layout = {
+          ...baseLayout(),
+          radialaxis: {
+            ...baseLayout().polar.radialaxis,
+            angle: 90,
+            showticklabels: false,
+            ticks: ""
+          },
+          dragmode: false
+        };
+
+        Plotly.react(plotDiv, data, layout, {
+          responsive: true,
+          staticPlot: true
+        });
+      }
+
+      /**
+       * Attempt to plot with validation
+       */
+      function attemptPlot(isInitial = false) {
+        if (isInitial instanceof Event) isInitial = false;
+
+        errorEl.textContent = '';
+        const res = validateAndCollect();
+
+        if (res.err) {
+          drawEmptyPlot();
+          if (!isInitial || (res.err && !res.err.includes('Not enough data points'))) {
+            errorEl.textContent = res.err;
+          }
+          return;
+        }
+
+        try {
+          plotData(res.angles, res.values);
+        } catch (e) {
+          errorEl.textContent = 'Error plotting data: ' + (e && e.message ? e.message : e);
+        }
+      }
+
+      // ========== Event Handlers ==========
+
+      function onSetStep() {
+        const prevTextsLocal = dbInputs.map(inp => inp.value) || [];
+        const val = Number(stepInput.value);
+        
+        if (Number.isNaN(val)) {
+          errorEl.textContent = 'Step value must be numeric.';
+          return;
+        }
+        if (!(1 <= val && val <= 180)) {
+          errorEl.textContent = 'Step is out of range (1-180).';
+          return;
+        }
+        
+        currentStep = Math.floor(val);
+        prevTexts = prevTextsLocal;
+        createDbRows(currentStep, true);
+        errorEl.textContent = '';
+        saveFieldsToStorage();
+      }
+
+      function onMirror() {
+        const n = dbInputs.length;
+        if (n < 2) {
+          errorEl.textContent = 'Not enough fields to mirror.';
+          return;
+        }
+        
+        const texts = dbInputs.map(inp => inp.value.trim());
+        for (let i = 2; i <= n; i++) {
+          const target = n - (i - 2);
+          if (target <= i) break;
+          texts[target - 1] = texts[i - 1];
+        }
+        
+        for (let i = 0; i < n; i++) dbInputs[i].value = texts[i] || '';
+        attemptPlot();
+        saveFieldsToStorage();
+      }
+
+      function onSave() {
+        const res = validateAndCollect();
+        if (res.err) {
+          errorEl.textContent = res.err;
+          return;
+        }
+        
+        Plotly.toImage(plotDiv, { format: 'png', height: 600, width: 600, scale: 2 })
+          .then(function(dataUrl) {
+            const a = document.createElement('a');
+            a.href = dataUrl;
+            a.download = 'antenna_plot.png';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+          })
+          .catch(function(err) {
+            errorEl.textContent = 'Saving error: ' + (err && err.message ? err.message : err);
+          });
+      }
+
+      function onClearFields() {
+        dbInputs.forEach(inp => inp.value = '');
+        localStorage.removeItem('antennaDbFields');
+        attemptPlot();
+      }
+
+      // ========== Event Listeners ==========
+
+      drawBtn.addEventListener('click', attemptPlot);
+      setStepBtn.addEventListener('click', onSetStep);
+      mirrorBtn.addEventListener('click', onMirror);
+      saveBtn.addEventListener('click', onSave);
+      clearFieldsBtn.addEventListener('click', onClearFields);
+      fieldsContainer.addEventListener('input', saveFieldsToStorage);
+      stepInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') onSetStep();
+      });
+
+      // ========== Initialization ==========
+
+      restoreFieldsFromStorage();
+      drawEmptyPlot();
+
+      // Expose for debugging
+      window._antennaApp = {
+        createDbRows,
+        attemptPlot,
+        plotData,
+        catmullRomClosedSample
+      };
+    })();
+  </script>
+</body>
+</html>
