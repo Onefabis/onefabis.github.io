@@ -1,4 +1,4 @@
-<!doctype html>
+<!doctype html> 
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -139,8 +139,14 @@
       margin-bottom: 6px;
     }
 
+    #db_range {
+      flex: 1;
+      display: flex;
+      justify-content: flex-end;
+    }
+
     /* Responsive for small screens */
-    @media (max-width: 900px) {
+    @media (max-width: 1040px) {
       .fields {
         grid-template-columns: repeat(4, 1fr);
       }
@@ -169,7 +175,7 @@
     }
 
     /* Responsive */
-    @media (max-width: 900px) {
+    @media (max-width: 1040px) {
       .app {
         grid-template-columns: 1fr;
         grid-auto-rows: auto 1fr;
@@ -196,7 +202,18 @@
         <button id="saveBtn" class="btn small">Save</button>
         <button id="drawBtn" class="btn small">Draw</button>
         <button id="mirrorBtn" class="btn small">Mirror L to R</button>
-        <div style="flex:1"></div>
+        <div id="db_range">
+          <!-- Range controls -->
+          <div class="row" style="align-items:center;">
+            <label style="margin-right:6px">Min dB:</label>
+            <input id="minDbInput" type="number" step="1" value="-100" style="width:80px" />
+            <label style="margin-left:6px">Max dB:</label>
+            <input id="maxDbInput" type="number" step="1" value="0" style="width:80px" />
+            <button id="setRangeBtn" class="btn small" style="margin-left:8px">Set range</button>
+            <button id="toggleModeBtn" class="btn small" style="margin-left:8px">Non-linear</button>
+          </div>
+
+        </div>
       </div>
 
       <div id="plot" class="elements" aria-label="Polar plot container"></div>
@@ -211,6 +228,7 @@
         <button id="setStepBtn" class="btn small" style="margin-left:8px">Set</button>
         <button id="clearFieldsBtn" class="btn small" style="margin-left:8px">Clear fields</button>
       </div>
+
       <div class="elements">
         <div class="row" style="justify-content:space-between">
           <span>dB values (angles)</span>
@@ -222,16 +240,19 @@
 
   <script>
     /*
-     * Antenna Polar Plot - Web Version
-     * - db_to_radius: (db/100 + 1)^5, clipped to [-100, 0]
-     * - smoothing: Catmull-Rom spline for cyclic data
+     * Antenna Polar Plot - Web Version (updated)
+     * - Added Min/Max dB inputs and Set range button
+     * - Circular line count is always 10; step = (max-min)/10
+     * - Only first 4 (closest to max) values are labeled; other concentric circles are unlabeled
+     * - User-entered Min/Max and field values are stored in localStorage
      */
 
     (function() {
       // ========== Configuration ==========
-      const SMOOTH_POINTS = 360;
+      const SMOOTH_POINTS = 360;           // resolution for circles/smooth trace
       const THETA_OFFSET = Math.PI / 2;
       const DB_REGEX = /-?\d+(?:[.,]\d+)?/;
+      const NUM_CIRCLES = 10; // <-- change this to whatever you want
 
       // ========== DOM Elements ==========
       const stepInput = document.getElementById('stepInput');
@@ -244,19 +265,50 @@
       const errorEl = document.getElementById('error');
       const plotDiv = document.getElementById('plot');
 
+      // Range elements
+      const minDbInput = document.getElementById('minDbInput');
+      const maxDbInput = document.getElementById('maxDbInput');
+      const setRangeBtn = document.getElementById('setRangeBtn');
+
       // ========== State ==========
       let currentStep = parseInt(stepInput.value) || 30;
       let dbInputs = [];
       let prevTexts = [];
+      let hasDataPlotted = false; // tracks if user line has been drawn
+      let isNonLinearMode = true; // default db division mode
 
-      // ========== Math Functions ==========
-      
+
+      // Default range
+      let minDb = -100;
+      let maxDb = 0;
+
+      // ========== Math / Mapping Functions ==========
+
       /**
-       * Convert dB value to radius using power transformation
+       * Format db nicely (trim trailing zeros)
+       */
+      function formatDb(v) {
+        if (Math.abs(Math.round(v) - v) < 1e-9) return String(Math.round(v));
+        return parseFloat(v.toFixed(2)).toString();
+      }
+
+      /**
+       * Convert dB value to radius in [0,1] using current minDb/maxDb and power transform
+       * radius = ( (db - min) / (max - min) )^5  (clamped)
        */
       function dbToRadius(db) {
-        db = Math.max(-100, Math.min(0, db));
-        return Math.pow(db / 100 + 1, 5);
+        const lo = Math.min(minDb, maxDb);
+        const hi = Math.max(minDb, maxDb);
+        if (isNaN(db) || !isFinite(db)) db = lo;
+
+        let s = (db - lo) / (hi - lo || 1);
+        s = Math.max(0, Math.min(1, s));
+
+        if (isNonLinearMode) {
+          return Math.pow(s, 5); // non-linear
+        } else {
+          return s; // linear
+        }
       }
 
       /**
@@ -268,8 +320,11 @@
       function catmullRomClosedSample(points, M) {
         if (points.length < 2) return { thetaSamples: [], rSamples: new Array(M).fill(0) };
 
-        // Prepare cyclic points
-        const p = [...points];
+        // Ensure points are sorted by theta
+        points = points.slice().sort((a,b)=>a[0]-b[0]);
+
+        // Make cyclic by adding extra points at end using +2π offset
+        const p = points.map(pn => [pn[0], pn[1]]);
         p.push([points[0][0] + 2 * Math.PI, points[0][1]]);
         p.push([points[1 % points.length][0] + 2 * Math.PI, points[1 % points.length][1]]);
 
@@ -326,7 +381,6 @@
         dbInputs = [];
 
         const nRows = Math.max(1, Math.floor(360 / step));
-
         for (let i = 0; i < nRows; i++) {
           const angle = i * step;
           const row = document.createElement('div');
@@ -360,7 +414,7 @@
       }
 
       /**
-       * Validate and collect data from input fields
+       * Validate and collect data from input fields (respecting current min/max)
        */
       function validateAndCollect() {
         errorEl.textContent = '';
@@ -386,8 +440,8 @@
             errors.push(`Non-numeric value at field ${idx + 1}.`);
             continue;
           }
-          if (parsed < -100 || parsed > 0) {
-            errors.push(`dB out of range at field ${idx + 1}.`);
+          if (parsed < Math.min(minDb, maxDb) || parsed > Math.max(minDb, maxDb)) {
+            errors.push(`dB out of range at field ${idx + 1} (must be between ${formatDb(minDb)} and ${formatDb(maxDb)}).`);
             continue;
           }
           
@@ -403,76 +457,74 @@
 
       // ========== Storage Functions ==========
 
+      try {
+        const storedMode = localStorage.getItem('antennaDivisionMode');
+        if (storedMode !== null) isNonLinearMode = storedMode === 'non-linear';
+      } catch(e){}
+
       function saveFieldsToStorage() {
-        const values = dbInputs.map(inp => inp.value);
-        localStorage.setItem('antennaDbFields', JSON.stringify(values));
-        localStorage.setItem('antennaStep', currentStep);
+        try {
+          const values = dbInputs.map(inp => inp.value);
+          localStorage.setItem('antennaDbFields', JSON.stringify(values));
+          localStorage.setItem('antennaStep', currentStep);
+          localStorage.setItem('antennaMinDb', String(minDb));
+          localStorage.setItem('antennaMaxDb', String(maxDb));
+        } catch (e) {
+          // ignore storage errors
+        }
       }
 
       function restoreFieldsFromStorage() {
-        const storedValues = JSON.parse(localStorage.getItem('antennaDbFields') || '[]');
-        const storedStep = parseInt(localStorage.getItem('antennaStep')) || currentStep;
-        stepInput.value = storedStep;
-        currentStep = storedStep;
-        createDbRows(currentStep, false);
-        
-        dbInputs.forEach((inp, idx) => {
-          if (storedValues[idx] !== undefined) inp.value = storedValues[idx];
-        });
+        try {
+          const storedValues = JSON.parse(localStorage.getItem('antennaDbFields') || '[]');
+          const storedStep = parseInt(localStorage.getItem('antennaStep')) || currentStep;
+          const storedMin = parseFloat(localStorage.getItem('antennaMinDb'));
+          const storedMax = parseFloat(localStorage.getItem('antennaMaxDb'));
+
+          if (!Number.isNaN(storedMin)) minDb = storedMin;
+          if (!Number.isNaN(storedMax)) maxDb = storedMax;
+
+          // Ensure inputs reflect stored range
+          minDbInput.value = minDb;
+          maxDbInput.value = maxDb;
+
+          stepInput.value = storedStep;
+          currentStep = storedStep;
+          createDbRows(currentStep, false);
+          
+          dbInputs.forEach((inp, idx) => {
+            if (storedValues[idx] !== undefined) inp.value = storedValues[idx];
+          });
+        } catch (e) {
+          // fallback to defaults
+          minDbInput.value = minDb;
+          maxDbInput.value = maxDb;
+          createDbRows(currentStep, false);
+        }
       }
 
-      // ========== Plotting Functions ==========
+      // ========== Plotting Helpers ==========
 
       /**
-       * Generate base layout configuration
-       */
-      function baseLayout() {
-        return {
-          polar: {
-            bgcolor: 'rgba(0,0,0,0)',
-            radialaxis: {
-              visible: true,
-              range: [0, 1],
-              angle: 90,
-              showticklabels: false,
-              tickmode: 'array',
-              tickvals: [dbToRadius(0), dbToRadius(-10), dbToRadius(-20), dbToRadius(-40)],
-              ticktext: ['0', '-10', '-20', '-40'],
-              tickfont: { color: 'rgba(0,0,0,0.8)' },
-              gridcolor: 'rgba(0,0,0,0.2)'
-            },
-            angularaxis: {
-              rotation: 90,
-              direction: "counterclockwise",
-              tickmode: 'array',
-              tickvals: [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330],
-              ticktext: ['0°', '30°', '60°', '90°', '120°', '150°', '180°', '210°', '240°', '270°', '300°', '330°'],
-              tickfont: { color: 'rgba(0,0,0,0.9)' },
-              gridcolor: 'rgba(0,0,0,0.2)'
-            }
-          },
-          showlegend: false,
-          margin: { t: 38, b: 38, l: 38, r: 38 },
-          paper_bgcolor: 'rgba(255, 255, 255, 1)',
-          plot_bgcolor: 'rgba(255, 255, 255, 1)'
-        };
-      }
-
-      /**
-       * Build horizontal tick label traces
+       * Build horizontal tick label traces - ONLY first 4 values (closest to max) are labeled
        */
       function buildHorizontalTickTraces() {
-        return [
-          { db: 0 },
-          { db: -10 },
-          { db: -20 },
-          { db: -40 }
-        ].map(t => ({
+        // compute step and label values
+        const step = (maxDb - minDb) / 10;
+        const labelDbs = [];
+        let labelCount = 5;
+        if (!isNonLinearMode){
+          labelCount = 10;
+        }
+        for (let i = 0; i < labelCount; i++) {
+          labelDbs.push(maxDb - i * step);
+        }
+        return labelDbs.map(dbVal => ({
           type: "scatterpolar",
           mode: "text",
           theta: [0],
-          r: [dbToRadius(t.db)],
-          text: [`${t.db} dB`],
+          r: [dbToRadius(dbVal)],
+          text: [`${formatDb(dbVal)} dB`],
           textangle: 0,
           textposition: "middle left",
           showlegend: false,
@@ -481,7 +533,7 @@
       }
 
       /**
-       * Build radial dotted lines
+       * Build radial dotted lines (angular grid)
        */
       function buildRadialDottedLines(stepDeg = 10) {
         const lines = [];
@@ -504,7 +556,7 @@
       }
 
       /**
-       * Draw empty plot with grid
+       * Draw empty plot with grid only (uses current range)
        */
       function drawEmptyPlot() {
         const layout = {
@@ -533,16 +585,56 @@
         const tickTextTraces = buildHorizontalTickTraces();
         const radialDottedLines = buildRadialDottedLines(10);
 
+        // build concentric circles (10 circles, unlabeled except first 4 handled by tickTextTraces)
+        const step = (maxDb - minDb) / 10;
+        const M = SMOOTH_POINTS;
+        const thetaSamples = Array.from({ length: SMOOTH_POINTS }, (_, i) => i * 2 * Math.PI / SMOOTH_POINTS);
+        const circleTraces = buildCircularLines(minDb, maxDb, thetaSamples);
+
         Plotly.react(
           plotDiv,
-          [emptyTrace, ...radialDottedLines, ...tickTextTraces],
+          [emptyTrace, 
+            ...circleTraces, 
+            ...radialDottedLines, 
+            ...tickTextTraces],
           layout,
           { responsive: true, staticPlot: true }
         );
       }
 
       /**
-       * Plot antenna pattern data
+       * Draw circular lines
+       */
+      function buildCircularLines(minDb, maxDb, thetaSamples) {
+        const lines = [];
+        const step = (maxDb - minDb) / NUM_CIRCLES;
+
+        for (let i = 0; i < NUM_CIRCLES; i++) {
+          const db = maxDb - i * step;
+          const rr = thetaSamples.map(() => dbToRadius(db));
+          const thdeg = thetaSamples.map(t => t * 180 / Math.PI);
+
+          lines.push({
+            type: "scatterpolar",
+            r: rr,
+            theta: thdeg,
+            mode: "lines",
+            line: { width: 0.7, color: "rgba(0,0,0,0.25)" },
+            hoverinfo: "none",
+            showlegend: false
+          });
+        }
+        return lines;
+      }
+
+      function dbToRadiusScaled(db, minDb, maxDb) {
+        // normalize (db - maxDb) because 0 dB is outer ring
+        const t = (db - maxDb) / (minDb - maxDb);
+        return Math.max(0, Math.min(1, t)); // clamp
+      }
+
+      /**
+       * Core plotting function - draws data respecting minDb/maxDb and 10 concentric circles
        */
       function plotData(anglesDeg, valuesDb) {
         // Convert angles to radians in [0, 2π)
@@ -583,7 +675,7 @@
           hovertemplate: '%{theta}°: %{r:.3f}<extra></extra>'
         };
 
-        // Radial lines (every 10°)
+        // Angular radial dotted lines (every 10°)
         const radialTraces = [];
         for (let deg = 0; deg < 360; deg += 10) {
           radialTraces.push({
@@ -591,29 +683,19 @@
             r: [0, 1],
             theta: [deg, deg],
             mode: 'lines',
-            line: { dash: 'dot', width: 0.8, color: 'rgba(200,200,200,0.15)' },
+            line: { dash: 'dot', width: 0.8, color: 'rgba(200,200,200,0.25)' },
             hoverinfo: 'none',
             showlegend: false
           });
         }
 
-        // Concentric circles
+        // Concentric circles - exactly 10 circles as requested
+        const step = (maxDb - minDb) / 10;
         const dbLevels = [];
-        for (let d = 0; d >= -100; d -= 10) dbLevels.push(d);
-        const circleTraces = [];
-        for (const db of dbLevels) {
-          const rr = Array.from({ length: M }, (_, i) => dbToRadius(db));
-          const thdeg = thetaSamples.map(t => t * 180 / Math.PI);
-          circleTraces.push({
-            type: 'scatterpolar',
-            r: rr,
-            theta: thdeg,
-            mode: 'lines',
-            line: { width: 0.7, color: 'rgba(200,200,200,0.08)' },
-            hoverinfo: 'none',
-            showlegend: false
-          });
+        for (let i = 0; i < 10; i++) {
+          dbLevels.push(maxDb - i * step);
         }
+        const circleTraces = buildCircularLines(minDb, maxDb, thetaSamples);
 
         const tickTextTraces = buildHorizontalTickTraces();
 
@@ -626,13 +708,17 @@
           ...tickTextTraces
         ];
 
+        // Build layout with radialaxis ticks only for first 4 values (converted to radii)
         const layout = {
           ...baseLayout(),
-          radialaxis: {
-            ...baseLayout().polar.radialaxis,
-            angle: 90,
-            showticklabels: false,
-            ticks: ""
+          polar: {
+            ...baseLayout().polar,
+            radialaxis: {
+              ...baseLayout().polar.radialaxis,
+              angle: 90,
+              showticklabels: false,
+              ticks: ""
+            }
           },
           dragmode: false
         };
@@ -665,6 +751,47 @@
         } catch (e) {
           errorEl.textContent = 'Error plotting data: ' + (e && e.message ? e.message : e);
         }
+      }
+
+      // ========== Layout / Base config ==========
+
+      function baseLayout() {
+        // radialaxis tickvals/text -> only first 4 (closest to max)
+        const step = (maxDb - minDb) / 10;
+        const labeled = [];
+        for (let i = 0; i < 6; i++) labeled.push(maxDb - i * step);
+        const tickvals = labeled.map(dbToRadius);
+        const ticktext = labeled.map(d => formatDb(d));
+
+        return {
+          polar: {
+            bgcolor: 'rgba(0,0,0,0)',
+            radialaxis: {
+              visible: true,
+              range: [0, 1],
+              angle: 90,
+              showticklabels: true,
+              tickmode: 'array',
+              tickvals: tickvals,
+              ticktext: ticktext,
+              tickfont: { color: 'rgba(0,0,0,0.8)' },
+              gridcolor: 'rgba(0,0,0,0.2)'
+            },
+            angularaxis: {
+              rotation: 90,
+              direction: "counterclockwise",
+              tickmode: 'array',
+              tickvals: [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330],
+              ticktext: ['0°', '30°', '60°', '90°', '120°', '150°', '180°', '210°', '240°', '270°', '300°', '330°'],
+              tickfont: { color: 'rgba(0,0,0,0.9)' },
+              gridcolor: 'rgba(0,0,0,0.2)'
+            }
+          },
+          showlegend: false,
+          margin: { t: 38, b: 38, l: 38, r: 38 },
+          paper_bgcolor: 'rgba(255, 255, 255, 1)',
+          plot_bgcolor: 'rgba(255, 255, 255, 1)'
+        };
       }
 
       // ========== Event Handlers ==========
@@ -732,32 +859,127 @@
       function onClearFields() {
         dbInputs.forEach(inp => inp.value = '');
         localStorage.removeItem('antennaDbFields');
-        attemptPlot();
+        drawEmptyPlot();
+        hasDataPlotted = false; // no line plotted
+      }
+
+      function onSetRange() {
+        errorEl.textContent = '';
+        const minVal = parseFloat(minDbInput.value);
+        const maxVal = parseFloat(maxDbInput.value);
+
+        if (Number.isNaN(minVal) || Number.isNaN(maxVal)) {
+          errorEl.textContent = 'Min/Max must be numeric.';
+          return;
+        }
+        if (!(minVal < maxVal)) {
+          errorEl.textContent = 'Min dB must be less than Max dB.';
+          return;
+        }
+
+        if (minVal < -1000 || maxVal > 1000) {
+          errorEl.textContent = 'Min/Max out of allowed range.';
+          return;
+        }
+
+        minDb = minVal;
+        maxDb = maxVal;
+
+        // Adjust all current dB input values to fit within new range
+        dbInputs.forEach(inp => {
+          let val = parseDbField(inp.value);
+          if (val !== null) {
+            if (val < minDb) val = minDb;
+            if (val > maxDb) val = maxDb;
+            inp.value = formatDb(val);
+          }
+        });
+
+        // Save updated values
+        saveFieldsToStorage();
+
+        // Redraw plot smartly
+        if (hasDataPlotted) {
+          attemptPlot(); // redraw with existing line
+        } else {
+          drawEmptyPlot(); // redraw empty
+        }
       }
 
       // ========== Event Listeners ==========
-
-      drawBtn.addEventListener('click', attemptPlot);
+      drawBtn.addEventListener('click', function() {
+        attemptPlot();
+        hasDataPlotted = true; // mark that line data exists
+      });
       setStepBtn.addEventListener('click', onSetStep);
       mirrorBtn.addEventListener('click', onMirror);
       saveBtn.addEventListener('click', onSave);
       clearFieldsBtn.addEventListener('click', onClearFields);
+      setRangeBtn.addEventListener('click', onSetRange);
+
+      const toggleModeBtn = document.getElementById('toggleModeBtn');
+
+      function updateToggleButton() {
+        toggleModeBtn.textContent = isNonLinearMode ? 'Non-linear' : 'Linear';
+      }
+
+      toggleModeBtn.addEventListener('click', () => {
+        isNonLinearMode = !isNonLinearMode;
+        try { localStorage.setItem('antennaDivisionMode', isNonLinearMode ? 'non-linear' : 'linear'); } catch(e){}
+        updateToggleButton();
+
+        // redraw plot based on mode
+        if (hasDataPlotted) attemptPlot();
+        else drawEmptyPlot();
+      });
+
       fieldsContainer.addEventListener('input', saveFieldsToStorage);
       stepInput.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') onSetStep();
+      });
+      minDbInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') onSetRange();
+      });
+      maxDbInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') onSetRange();
+      });
+
+      // Also save range changes immediately to storage (on input)
+      minDbInput.addEventListener('input', function() {
+        // optimistic set but don't redraw until Set range pressed
+        // we still update localStorage to persist typed value
+        try {
+          localStorage.setItem('antennaMinDbDraft', minDbInput.value);
+        } catch(e){}
+      });
+      maxDbInput.addEventListener('input', function() {
+        try {
+          localStorage.setItem('antennaMaxDbDraft', maxDbInput.value);
+        } catch(e){}
       });
 
       // ========== Initialization ==========
 
       restoreFieldsFromStorage();
+      // If there were draft values from typing, populate inputs but don't apply until Set range
+      try {
+        const dMin = localStorage.getItem('antennaMinDbDraft');
+        const dMax = localStorage.getItem('antennaMaxDbDraft');
+        if (dMin !== null) minDbInput.value = dMin;
+        if (dMax !== null) maxDbInput.value = dMax;
+      } catch(e){}
+
       drawEmptyPlot();
+      updateToggleButton(); // set correct label
 
       // Expose for debugging
       window._antennaApp = {
         createDbRows,
         attemptPlot,
         plotData,
-        catmullRomClosedSample
+        catmullRomClosedSample,
+        setRange: onSetRange,
+        getRange: () => ({ minDb, maxDb })
       };
     })();
   </script>
